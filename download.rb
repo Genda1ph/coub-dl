@@ -4,13 +4,15 @@ require 'nokogiri'
 require 'json'
 require 'open-uri'
 require 'logger'
+require 'open3'
 
-VERSION = '0.1.0'
+VERSION = '0.2.0'
 
 @options = {
   dir: ENV['PWD'],
   log_file: STDOUT,
-  log_level: Logger::INFO
+  log_level: Logger::INFO,
+  ffmpeg_log_level: 'panic'
 }
 
 # Set up logging
@@ -27,11 +29,21 @@ def convert(video_file, audio_file, output)
     raise 'Conversion error'
   end
 
-  # Uses ffmpeg to add audio to mp4 container with video
-  cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'fatal', '-i', "\"#{video_file}\"",
-     '-i', "\"#{audio_file}\"", '-c', 'copy', '-map', '0:v:0', '-map', '1:a:0', "\"#{output}\""].join(' ')
-  @log.debug("FFmpeg call: #{cmd}")
-  system(cmd) or raise 'Conversion error'
+  # Debug info for FFmpeg
+  args = ['-loglevel', @options[:ffmpeg_log_level], '-i', "#{video_file}", '-i', "#{audio_file}",
+    '-c', 'copy', '-map', '0:v:0', '-map', '1:a:0', "#{output}"]
+  @log.debug("FFmpeg args: #{args}")
+
+  # A stupid, but necessary way to call FFmpeg: Kernel.system causes FFmpeg to ignore -loglevel and
+  # leaks something, breaking the shell - arguments lose first character, breaking EVERYTHING.
+  stdout, stderr, status = Open3.capture3('ffmpeg', '-hide_banner', '-loglevel',
+    @options[:ffmpeg_log_level], '-i', "#{video_file}", '-i', "#{audio_file}", '-c', 'copy',
+    '-map', '0:v:0', '-map', '1:a:0', "#{output}")
+
+  if status.exitstatus > 0
+    @log.error('FFmpeg: ' +stderr)
+    raise 'Conversion error'
+  end
 end
 
 def download(url, path, size)
@@ -110,22 +122,24 @@ def parse_args(opts)
   # CLI args parser
   opts.each do |opt|
     case opt
-      when '-d'
+      when '-d', '--dir'
         @options[:dir] = opts[opts.index(opt) +1]
-      when '-l'
+      when '-l', '--log'
         @options[:log_file] = opts[opts.index(opt) +1]
         @log = Logger.new(@options[:log_file])
-      when '-h'
+      when '-h', '-?', '--help'
         show_help
-      when '-q'
+      when '-q', '--quiet'
         @options[:log_level] = Logger::WARN
+        @options[:ffmpeg_log_level] = 'quiet'
         @log.level = Logger::WARN
-      when '-u'
+      when '-u', '--url'
         @options[:url] = opts[opts.index(opt) +1]
-      when '-v'
+      when '-v', '--verbose'
         @options[:log_level] = Logger::DEBUG
+        @options[:ffmpeg_log_level] = 'fatal'
         @log.level = Logger::DEBUG
-      when '-V'
+      when '-V', '--version'
         puts "Coub downloader version #{VERSION}."
         exit(0)
     end
